@@ -5,6 +5,7 @@ use std::{
     io::Write,
     sync::{mpsc, Arc},
 };
+use tokio::io::AsyncWriteExt;
 
 #[derive(Debug)]
 pub struct RecogBuffer {
@@ -117,16 +118,30 @@ impl RecogBuffer {
         self.speech_detector_event = SpeechDetectorEvent::Recognizing;
         log::info!("Send {} bytes to STT.", data.len());
         let tx = self.data_channel.0.clone();
-        self.engine.async_handle().spawn(connect(data, tx));
+        self.engine
+            .async_handle()
+            .spawn(connect(data, self.engine.filename().to_owned(), tx));
     }
 }
 
-async fn connect(data: Vec<u8>, tx: mpsc::Sender<String>) {
+async fn connect(data: Vec<u8>, filename: String, tx: mpsc::Sender<String>) {
     if data.is_empty() {
         tx.send(String::new()).unwrap();
         return;
     }
     let seconds = data.len() / 16000;
-    let text = format!("Recognized {} seconds.", seconds);
-    let _ = tx.send(text);
+    let Ok(mut output) = tokio::fs::File::create(&filename).await else {
+        log::error!("Failed to create {:?}", filename);
+        tx.send(String::new()).unwrap();
+        return;
+    };
+    match output.write_all(&data).await {
+        Ok(_) => {
+            let text = format!("Recognized {} seconds.", seconds);
+            let _ = tx.send(text);
+        }
+        Err(e) => {
+            log::error!("Failed to write into {:?}. {:?}", filename, e);
+        }
+    }
 }
